@@ -1,0 +1,16 @@
+# Dependencias de scripts/servidor_rembg.py
+# Probado con Python 3.14.4 en macOS 27 (Apple M5). Instalar: pip3 install -r scripts/requirements.txt
+rembg==2.0.84
+onnxruntime==1.27.0        # Linux + GPU NVIDIA: onnxruntime-gpu (ver docs/DESPLIEGUE_REMOTO.md)
+Pillow==12.2.0
+numpy==2.4.6
+
+# Solo se usa cv2.createCLAHE + decodificar/codificar/redimensionar. La variante
+# "contrib" (cv2.ximgproc.guidedFilter) NO hace falta: el guided filter se probó y
+# se descartó (docs/EXPERIMENTOS.md). Probado con 5.0.0.93 (contrib), que también sirve.
+opencv-python-headless
+
+# Además de estas dependencias pip, el daemon necesita ARCHIVOS de modelo:
+#  - isnet-general-use.onnx y u2net.onnx: los baja rembg solo la primera vez (~/.rembg/models/).
+#  - real_esrgan_x2.onnx (solo botón "Mejorar calidad"): se baja a mano a
+#    ~/.cache/real-esrgan/ — ver README.md, sección "Instalación".
