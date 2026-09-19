@@ -119,6 +119,28 @@ function recortarYCentrar(buf: Buffer2D, caja: CajaAlpha, tam = TAM_ESTANDAR, ma
   return { width: tam, height: tam, data: new Uint8ClampedArray(imgData.data) };
 }
 
+// Reescala sin recortar — se usa para mantener originalRef alineado con
+// bufferRef después de "Mejorar calidad" (que cambia el tamaño del buffer
+// x2, pero originalRef solo necesita un resize simple, no pasar de nuevo
+// por Real-ESRGAN).
+function reescalarBuffer(buf: Buffer2D, nuevoAncho: number, nuevoAlto: number): Buffer2D {
+  const origen = document.createElement("canvas");
+  origen.width = buf.width;
+  origen.height = buf.height;
+  origen.getContext("2d")!.putImageData(comoImageData(buf), 0, 0);
+
+  const destino = document.createElement("canvas");
+  destino.width = nuevoAncho;
+  destino.height = nuevoAlto;
+  const ctx = destino.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(origen, 0, 0, buf.width, buf.height, 0, 0, nuevoAncho, nuevoAlto);
+
+  const imgData = ctx.getImageData(0, 0, nuevoAncho, nuevoAlto);
+  return { width: nuevoAncho, height: nuevoAlto, data: new Uint8ClampedArray(imgData.data) };
+}
+
 async function blobABuffer(blob: Blob): Promise<Buffer2D> {
   const bitmap = await createImageBitmap(blob);
   const c = document.createElement("canvas");
@@ -152,6 +174,12 @@ export default function Editor() {
   const [cargandoAccion, setCargandoAccion] = useState<string | null>(null);
   const [claveActual, setClaveActual] = useState("");
   const [modoPincel, setModoPincel] = useState<"apagado" | "borrar" | "restaurar">("apagado");
+  // Toggle "Mejorar contraste" (CLAHE) — probado 2026-09-17: arregla el
+  // "fantasma" semi-transparente en objetos casi-blancos sobre fondo blanco
+  // (ej. 392291-03) sin regresión en los demás casos. Se puede apagar acá
+  // mismo si algún caso sale peor con esto activo; no requiere tocar código
+  // en scripts/servidor_rembg.py (ese archivo respeta este flag por pedido).
+  const [usarClahe, setUsarClahe] = useState(true);
   const [radioPincel, setRadioPincel] = useState(30);
   const [urlExterna, setUrlExterna] = useState("");
   const [mensaje, setMensaje] = useState<string | null>(null);
@@ -360,7 +388,7 @@ export default function Editor() {
       const resp = await fetch("/api/remove-bg", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imagenBase64, modelo }),
+        body: JSON.stringify({ imagenBase64, modelo, clahe: usarClahe }),
       });
       const d = await resp.json();
       if (d.error) throw new Error(d.error);
@@ -386,6 +414,42 @@ export default function Editor() {
           ? `Fondo removido con ${modelo} y encuadrado en ${TAM_ESTANDAR}×${TAM_ESTANDAR}.`
           : `Fondo removido con ${modelo} (sin contenido detectable para encuadrar).`
       );
+    } catch (e) {
+      historialRef.current.pop();
+      setError(String(e));
+    } finally {
+      setCargandoAccion(null);
+    }
+  }
+
+  // Botón aparte, no automático: sube nitidez/resolución x2 con Real-ESRGAN.
+  // Probado 2026-09-17 — ayuda de verdad en fotos con blur/compresión leve
+  // (~3s por clic, mucho más lento que quitar fondo), pero sobre una foto ya
+  // nítida puede aplanar un poco la textura fina. Por eso queda como acción
+  // manual que se usa solo cuando la foto lo amerita, no algo por defecto.
+  async function mejorarCalidad() {
+    if (!bufferRef.current) return;
+    guardarHistorial();
+    setCargandoAccion("Mejorando calidad (Real-ESRGAN)… esto puede tardar ~3s");
+    setError(null);
+    try {
+      const imagenBase64 = await bufferABase64Png(bufferRef.current);
+      const resp = await fetch("/api/mejorar-calidad", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imagenBase64 }),
+      });
+      const d = await resp.json();
+      if (d.error) throw new Error(d.error);
+      const blob = await (await fetch(`data:image/png;base64,${d.imagenBase64}`)).blob();
+      const nuevo = await blobABuffer(blob);
+
+      if (originalRef.current) {
+        originalRef.current = reescalarBuffer(originalRef.current, nuevo.width, nuevo.height);
+      }
+      bufferRef.current = nuevo;
+      redibujar();
+      setMensaje(`Calidad mejorada con Real-ESRGAN (${nuevo.width}×${nuevo.height}).`);
     } catch (e) {
       historialRef.current.pop();
       setError(String(e));
@@ -582,6 +646,13 @@ export default function Editor() {
                 {m.lento && <span className="text-neutral-500"> (lento)</span>}
               </button>
             ))}
+            <label
+              className="flex items-center gap-1 text-xs text-neutral-400 cursor-pointer select-none"
+              title="Sube el contraste antes de detectar el fondo — ayuda en objetos casi blancos sobre fondo blanco. El color final sigue saliendo de la foto original, no se altera."
+            >
+              <input type="checkbox" checked={usarClahe} onChange={(e) => setUsarClahe(e.target.checked)} />
+              Mejorar contraste
+            </label>
 
             <div className="w-px h-6 bg-neutral-700 mx-1" />
 
@@ -621,6 +692,17 @@ export default function Editor() {
             <button onClick={rotar} className="btn">Rotar 90°</button>
             <button onClick={espejo} className="btn">Espejo</button>
             <button onClick={deshacer} className="btn">Deshacer</button>
+
+            <div className="w-px h-6 bg-neutral-700 mx-1" />
+
+            <span className="text-xs text-neutral-500 uppercase tracking-wide">Calidad</span>
+            <button
+              onClick={mejorarCalidad}
+              className="btn"
+              title="Real-ESRGAN x2 — sube nitidez/resolución. Tarda ~3s por clic; úsalo solo en fotos que estén de verdad borrosas, no en todas."
+            >
+              Mejorar calidad <span className="text-neutral-500">(lento)</span>
+            </button>
           </div>
         </div>
 

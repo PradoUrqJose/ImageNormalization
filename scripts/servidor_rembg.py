@@ -12,10 +12,16 @@ lanzarlo a mano. Para pararlo: pkill -f servidor_rembg.py
 
 Uso: python3 servidor_rembg.py [puerto]   (default 8765)
 """
+import io
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import cv2
+import numpy as np
+import onnxruntime as ort
+from PIL import Image
 from rembg import new_session, remove
 
 # Se probaron bria-rmbg y birefnet-general (~1GB cada uno) como alternativas
@@ -45,6 +51,151 @@ def obtener_sesion(modelo: str):
     return sesiones[modelo]
 
 
+# --- CLAHE opcional (toggle "Mejorar contraste" en el editor) -------------
+#
+# Probado en 2026-09-17: en fotos de calzado/ropa blanca sobre fondo blanco
+# (ej. código 392291-03), el objeto y el fondo llegan a diferir por solo
+# ~5 valores de RGB sobre 255 — ni isnet ni u2net (ni birefnet-lite, ni
+# u2netp, ni silueta) tienen señal suficiente ahí, y dejan zonas enteras
+# semi-transparentes ("fantasma"). Aplicar CLAHE (sube contraste local)
+# ANTES de la inferencia le da esa señal al modelo. Medido en 5 casos reales
+# (incluido el más difícil, un running de malla): baja los píxeles de alfa
+# intermedio de ~17% a ~2% de la imagen, sin regresión en los casos que ya
+# andaban bien, y sin costo de tiempo real (<10ms).
+#
+# Importante: CLAHE se usa SOLO para calcular la máscara (le da al modelo
+# una versión más contrastada para "ver" mejor) — el color final sale
+# siempre de la imagen ORIGINAL sin tocar, no de la versión con contraste
+# subido (si no, el resultado queda más oscuro/grisáceo que la foto real).
+#
+# Para revertir esto por completo: borrar esta función, el parámetro
+# `clahe` de do_POST, y volver a `remove(datos, session=sesion)` a secas.
+def quitar_fondo_con_clahe(datos: bytes, sesion) -> bytes:
+    arr = cv2.imdecode(np.frombuffer(datos, np.uint8), cv2.IMREAD_COLOR)
+    if arr is None:
+        # formato que cv2 no decodifica (ej. algunos PNG raros) -> sin CLAHE
+        return remove(datos, session=sesion)
+
+    l, a, b = cv2.split(cv2.cvtColor(arr, cv2.COLOR_BGR2LAB))
+    l_realzado = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
+    arr_realzado = cv2.cvtColor(cv2.merge((l_realzado, a, b)), cv2.COLOR_LAB2BGR)
+    ok, buf = cv2.imencode(".png", arr_realzado)
+    if not ok:
+        return remove(datos, session=sesion)
+
+    resultado_realzado = remove(buf.tobytes(), session=sesion)
+    alfa = Image.open(io.BytesIO(resultado_realzado)).convert("RGBA").getchannel("A")
+
+    original = Image.open(io.BytesIO(datos)).convert("RGBA")
+    final = original.copy()
+    final.putalpha(alfa)
+
+    salida = io.BytesIO()
+    final.save(salida, format="PNG")
+    return salida.getvalue()
+
+
+# --- "Mejorar calidad" (botón aparte, Real-ESRGAN x2) ----------------------
+#
+# Probado en 2026-09-17. Modelo: real_esrgan_x2.onnx (RRDBNet, BSD-3-Clause,
+# exportado por SceneWorks — https://huggingface.co/SceneWorks/real-esrgan-onnx),
+# descargado a mano en ~/.cache/real-esrgan/ (NO vive en este repo ni en
+# ~/.rembg). Para borrarlo del todo: `rm -rf ~/.cache/real-esrgan` y sacar
+# este bloque completo (desde el import de onnxruntime de más arriba hasta
+# el endpoint /mejorar-calidad en do_POST).
+#
+# Por qué x2 y no x4: nuestras fotos ya vienen en resolución decente
+# (1200-1500px); el objetivo era "afilar" fotos con blur/compresión leve,
+# no agrandarlas 4x. Es una red convolucional (no transformer, a diferencia
+# de BiRefNet), así que CoreML la compila sin colgarse (~1.3s, una vez).
+#
+# Medido en un caso simulado (blur + jpeg agresivo): nitidez (var. de
+# Laplaciano) subió de 3.5 a 76 (el original sin borrosidad daba 96) —
+# mejora real y visible. CPU: ~35s/imagen (inaceptable). CoreML: ~2.8-3s —
+# mucho más lento que quitar fondo (~0.2s), por eso es un botón aparte y
+# no algo automático.
+#
+# OJO — probado también sobre una foto YA nítida: la métrica global casi no
+# cambió, pero de cerca se ve que la textura fina de la tela se aplana un
+# poco (efecto típico de estos modelos GAN). No es gratis aplicarlo siempre
+# — está pensado para usarlo puntualmente en fotos que de verdad estén
+# borrosas, no como paso automático en todas.
+RUTA_MODELO_ESRGAN = os.path.expanduser("~/.cache/real-esrgan/real_esrgan_x2.onnx")
+ESCALA_ESRGAN = 2
+_sesion_esrgan = None
+
+
+def obtener_sesion_esrgan():
+    global _sesion_esrgan
+    if _sesion_esrgan is None:
+        if not os.path.exists(RUTA_MODELO_ESRGAN):
+            raise FileNotFoundError(
+                f"Falta el modelo de Real-ESRGAN en {RUTA_MODELO_ESRGAN} "
+                "(bajarlo de https://huggingface.co/SceneWorks/real-esrgan-onnx)"
+            )
+        print("cargando modelo real-esrgan x2...", file=sys.stderr)
+        _sesion_esrgan = ort.InferenceSession(
+            RUTA_MODELO_ESRGAN, providers=["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        )
+        print("real-esrgan x2 listo", file=sys.stderr)
+    return _sesion_esrgan
+
+
+def _mejorar_bgr(sesion, bgr: np.ndarray) -> np.ndarray:
+    """Sube nitidez/resolución x2 de un array BGR, procesando en mosaicos de
+    512px (con 16px de solape) para no disparar el uso de memoria en fotos
+    grandes — mismo criterio documentado por el modelo (ver README de
+    SceneWorks/real-esrgan-onnx)."""
+    TILE, PAD = 512, 16
+    h, w = bgr.shape[:2]
+    nombre_in = sesion.get_inputs()[0].name
+    salida = np.zeros((h * ESCALA_ESRGAN, w * ESCALA_ESRGAN, 3), dtype=np.float32)
+
+    for y0 in range(0, h, TILE):
+        for x0 in range(0, w, TILE):
+            y1, x1 = min(y0 + TILE, h), min(x0 + TILE, w)
+            py0, py1 = max(0, y0 - PAD), min(h, y1 + PAD)
+            px0, px1 = max(0, x0 - PAD), min(w, x1 + PAD)
+
+            tile_rgb = cv2.cvtColor(bgr[py0:py1, px0:px1], cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            entrada = tile_rgb.transpose(2, 0, 1)[None, ...]
+            salida_tile = sesion.run(None, {nombre_in: entrada})[0][0]
+            salida_tile = np.clip(salida_tile.transpose(1, 2, 0), 0, 1)
+
+            oy0, ox0 = (y0 - py0) * ESCALA_ESRGAN, (x0 - px0) * ESCALA_ESRGAN
+            oy1, ox1 = oy0 + (y1 - y0) * ESCALA_ESRGAN, ox0 + (x1 - x0) * ESCALA_ESRGAN
+            salida[y0 * ESCALA_ESRGAN : y1 * ESCALA_ESRGAN, x0 * ESCALA_ESRGAN : x1 * ESCALA_ESRGAN] = salida_tile[
+                oy0:oy1, ox0:ox1
+            ]
+
+    return cv2.cvtColor((salida * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+
+
+def mejorar_calidad(datos: bytes) -> bytes:
+    sesion = obtener_sesion_esrgan()
+    arr = cv2.imdecode(np.frombuffer(datos, np.uint8), cv2.IMREAD_UNCHANGED)
+    if arr is None:
+        raise ValueError("No se pudo decodificar la imagen")
+
+    tiene_alfa = arr.ndim == 3 and arr.shape[2] == 4
+    bgr = arr[:, :, :3]
+    bgr_mejorado = _mejorar_bgr(sesion, bgr)
+
+    if tiene_alfa:
+        alfa = arr[:, :, 3]
+        alfa_mejorada = cv2.resize(
+            alfa, (bgr_mejorado.shape[1], bgr_mejorado.shape[0]), interpolation=cv2.INTER_LANCZOS4
+        )
+        salida = cv2.merge((bgr_mejorado, alfa_mejorada))
+        ok, buf = cv2.imencode(".png", salida)
+    else:
+        ok, buf = cv2.imencode(".png", bgr_mejorado)
+
+    if not ok:
+        raise ValueError("No se pudo codificar el resultado")
+    return buf.tobytes()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, formato, *args):
         pass  # silencioso — si no, ensucia stdout con una línea por pedido
@@ -60,17 +211,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         ruta = urlparse(self.path)
-        if ruta.path != "/quitar-fondo":
+        if ruta.path not in ("/quitar-fondo", "/mejorar-calidad"):
             self.send_response(404)
             self.end_headers()
             return
 
-        modelo = parse_qs(ruta.query).get("modelo", ["isnet-general-use"])[0]
         length = int(self.headers.get("Content-Length", 0))
         datos = self.rfile.read(length)
         try:
-            sesion = obtener_sesion(modelo)
-            resultado = remove(datos, session=sesion)
+            if ruta.path == "/mejorar-calidad":
+                resultado = mejorar_calidad(datos)
+            else:
+                qs = parse_qs(ruta.query)
+                modelo = qs.get("modelo", ["isnet-general-use"])[0]
+                usar_clahe = qs.get("clahe", ["1"])[0] == "1"
+                sesion = obtener_sesion(modelo)
+                resultado = (
+                    quitar_fondo_con_clahe(datos, sesion)
+                    if usar_clahe
+                    else remove(datos, session=sesion)
+                )
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
             self.end_headers()
