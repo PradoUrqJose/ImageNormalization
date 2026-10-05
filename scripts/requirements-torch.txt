@@ -1,0 +1,17 @@
+# Dependencias de scripts/servidor_torch.py (BiRefNet + RMBG 2.0).
+# Van en un venv APARTE (scripts/.venv-torch), NO en el Python del sistema:
+#   python3 -m venv scripts/.venv-torch
+#   scripts/.venv-torch/bin/python -m pip install -r scripts/requirements-torch.txt
+# Probado el 2026-10-05 con Python 3.14.4 en macOS 27 (Apple M5). Ocupa ~1.1 GB.
+# Desinstalar: ver docs/MODELOS_PYTORCH.md (basta con borrar la carpeta del venv).
+torch==2.14.1
+torchvision==0.29.1        # BiRefNet usa torchvision.ops.deform_conv2d
+transformers==5.18.0       # AutoModelForImageSegmentation + trust_remote_code
+huggingface_hub==1.33.0
+safetensors==0.8.0
+timm==1.0.30               # requerido por el código remoto de BiRefNet
+kornia==0.8.3              # idem
+einops==0.8.2              # idem
+pillow==12.3.0
+numpy==2.5.3
+opencv-python-headless==5.0.0.93   # CLAHE + resize

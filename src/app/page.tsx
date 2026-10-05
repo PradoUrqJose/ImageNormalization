@@ -9,7 +9,7 @@ const RADIO_MIN = 8;
 const RADIO_MAX = 120;
 const HISTORIAL_MAX = 20;
 
-type ModeloQuitarFondo = "isnet-general-use" | "u2net";
+type ModeloQuitarFondo = "isnet-general-use" | "u2net" | "birefnet" | "rmbg-2.0";
 
 // Se probaron bria-rmbg y birefnet-general (~1GB, ~11-14s/imagen en CPU,
 // CoreML no llegaba a compilar) — revertido, hacían sentir lento hasta a
@@ -18,9 +18,21 @@ type ModeloQuitarFondo = "isnet-general-use" | "u2net";
 // 100% de CPU). Tras matar ese proceso y confirmar que CoreML compila bien
 // de nuevo (6-7s una sola vez), isnet/u2net vuelven a usar CoreML:
 // ~0.1-0.3s por clic con el servidor persistente.
-const MODELOS_QUITAR_FONDO: { id: ModeloQuitarFondo; etiqueta: string; lento: boolean }[] = [
-  { id: "isnet-general-use", etiqueta: "isnet", lento: false },
-  { id: "u2net", etiqueta: "u2net", lento: false },
+//
+// 2026-10-05: birefnet y rmbg-2.0 vuelven, pero por otro camino — PyTorch +
+// GPU (MPS) en un daemon aparte (scripts/servidor_torch.py), sin CoreML, así
+// que no puede repetirse el cuelgue de ANECompilerService. ~1s por imagen;
+// la primera vez tarda ~30-60s (descarga + carga). Para quitarlos: borrar
+// estas dos entradas y seguir docs/MODELOS_PYTORCH.md.
+const MODELOS_QUITAR_FONDO: { id: ModeloQuitarFondo; etiqueta: string; aviso?: string }[] = [
+  { id: "isnet-general-use", etiqueta: "isnet" },
+  { id: "u2net", etiqueta: "u2net" },
+  { id: "birefnet", etiqueta: "BiRefNet", aviso: "Modelo grande (MIT) — ~1s por imagen; el primer uso tarda ~30-60s en cargar" },
+  {
+    id: "rmbg-2.0",
+    etiqueta: "RMBG 2.0",
+    aviso: "Bria RMBG 2.0 — licencia NO comercial (CC BY-NC 4.0). ~1s por imagen; el primer uso tarda ~30-60s en cargar",
+  },
 ];
 
 // lib.dom.d.ts reciente tipa ImageData con Uint8ClampedArray<ArrayBuffer>
@@ -42,7 +54,10 @@ function rotar90CW(b: Buffer2D): Buffer2D {
       const nx = h - 1 - y;
       const ny = x;
       const d = (ny * h + nx) * 4;
-      out[d] = data[s]; out[d + 1] = data[s + 1]; out[d + 2] = data[s + 2]; out[d + 3] = data[s + 3];
+      out[d] = data[s];
+      out[d + 1] = data[s + 1];
+      out[d + 2] = data[s + 2];
+      out[d + 3] = data[s + 3];
     }
   }
   return { width: h, height: w, data: out };
@@ -56,7 +71,10 @@ function espejoH(b: Buffer2D): Buffer2D {
       const s = (y * w + x) * 4;
       const nx = w - 1 - x;
       const d = (y * w + nx) * 4;
-      out[d] = data[s]; out[d + 1] = data[s + 1]; out[d + 2] = data[s + 2]; out[d + 3] = data[s + 3];
+      out[d] = data[s];
+      out[d + 1] = data[s + 1];
+      out[d + 2] = data[s + 2];
+      out[d + 3] = data[s + 3];
     }
   }
   return { width: w, height: h, data: out };
@@ -73,7 +91,10 @@ type CajaAlpha = { x0: number; y0: number; x1: number; y1: number };
 
 function calcularCajaAlpha(buf: Buffer2D): CajaAlpha | null {
   const { width, height, data } = buf;
-  let x0 = width, y0 = height, x1 = -1, y1 = -1;
+  let x0 = width,
+    y0 = height,
+    x1 = -1,
+    y1 = -1;
   for (let y = 0; y < height; y++) {
     const filaBase = y * width;
     for (let x = 0; x < width; x++) {
@@ -144,7 +165,8 @@ function reescalarBuffer(buf: Buffer2D, nuevoAncho: number, nuevoAlto: number): 
 async function blobABuffer(blob: Blob): Promise<Buffer2D> {
   const bitmap = await createImageBitmap(blob);
   const c = document.createElement("canvas");
-  c.width = bitmap.width; c.height = bitmap.height;
+  c.width = bitmap.width;
+  c.height = bitmap.height;
   const ctx = c.getContext("2d")!;
   ctx.drawImage(bitmap, 0, 0);
   const imgData = ctx.getImageData(0, 0, c.width, c.height);
@@ -154,7 +176,8 @@ async function blobABuffer(blob: Blob): Promise<Buffer2D> {
 function bufferABase64Png(b: Buffer2D): Promise<string> {
   return new Promise((resolve, reject) => {
     const c = document.createElement("canvas");
-    c.width = b.width; c.height = b.height;
+    c.width = b.width;
+    c.height = b.height;
     const ctx = c.getContext("2d")!;
     ctx.putImageData(comoImageData(b), 0, 0);
     c.toBlob((blob) => {
@@ -216,7 +239,10 @@ export default function Editor() {
   const cacheGet = useCallback((key: string): Blob | undefined => {
     const m = cacheRef.current;
     const v = m.get(key);
-    if (v) { m.delete(key); m.set(key, v); }
+    if (v) {
+      m.delete(key);
+      m.set(key, v);
+    }
     return v;
   }, []);
 
@@ -241,7 +267,7 @@ export default function Editor() {
       cacheSet(key, blob);
       return blob;
     },
-    [cacheGet, cacheSet]
+    [cacheGet, cacheSet],
   );
 
   useEffect(() => {
@@ -287,7 +313,7 @@ export default function Editor() {
       setClaveActual(clave);
       redibujar();
     },
-    [redibujar]
+    [redibujar],
   );
 
   const seleccionarIndice = useCallback(
@@ -320,7 +346,7 @@ export default function Editor() {
         if (!cacheGet(k)) obtenerBlob(k).catch(() => {});
       }
     },
-    [galeria, cargarImagen, cacheGet, obtenerBlob]
+    [galeria, cargarImagen, cacheGet, obtenerBlob],
   );
 
   useEffect(() => {
@@ -358,11 +384,7 @@ export default function Editor() {
         setError(null);
         cargarImagen(blob, claveActual)
           .then(() => {
-            setMensaje(
-              claveActual
-                ? `Imagen pegada del portapapeles para ${claveActual}.`
-                : "Imagen pegada del portapapeles. Escribe el código universal antes de sobrescribir."
-            );
+            setMensaje(claveActual ? `Imagen pegada del portapapeles para ${claveActual}.` : "Imagen pegada del portapapeles. Escribe el código universal antes de sobrescribir.");
           })
           .catch((err) => setError(String(err)));
         break;
@@ -380,8 +402,8 @@ export default function Editor() {
   async function quitarFondo(modelo: ModeloQuitarFondo) {
     if (!bufferRef.current) return;
     guardarHistorial();
-    const lento = MODELOS_QUITAR_FONDO.find((m) => m.id === modelo)?.lento;
-    setCargandoAccion(`Quitando fondo (${modelo})…${lento ? " esto puede tardar ~10-15s" : ""}`);
+    const aviso = MODELOS_QUITAR_FONDO.find((m) => m.id === modelo)?.aviso;
+    setCargandoAccion(`Quitando fondo (${modelo})…${aviso ? " la primera vez puede tardar ~30-60s" : ""}`);
     setError(null);
     try {
       const imagenBase64 = await bufferABase64Png(bufferRef.current);
@@ -409,11 +431,7 @@ export default function Editor() {
 
       bufferRef.current = nuevo;
       redibujar();
-      setMensaje(
-        caja
-          ? `Fondo removido con ${modelo} y encuadrado en ${TAM_ESTANDAR}×${TAM_ESTANDAR}.`
-          : `Fondo removido con ${modelo} (sin contenido detectable para encuadrar).`
-      );
+      setMensaje(caja ? `Fondo removido con ${modelo} y encuadrado en ${TAM_ESTANDAR}×${TAM_ESTANDAR}.` : `Fondo removido con ${modelo} (sin contenido detectable para encuadrar).`);
     } catch (e) {
       historialRef.current.pop();
       setError(String(e));
@@ -550,9 +568,7 @@ export default function Editor() {
       // falta escribir el código a mano.
       await cargarImagen(blob, claveActual);
       setMensaje(
-        claveActual
-          ? `Imagen cargada del enlace para ${claveActual}. Edítala y sobrescribe cuando esté lista.`
-          : "Imagen cargada del enlace. Escribe el código universal antes de sobrescribir."
+        claveActual ? `Imagen cargada del enlace para ${claveActual}. Edítala y sobrescribe cuando esté lista.` : "Imagen cargada del enlace. Escribe el código universal antes de sobrescribir.",
       );
     } catch (e) {
       setError(String(e));
@@ -603,26 +619,17 @@ export default function Editor() {
     <div className="flex h-screen bg-neutral-950 text-neutral-100">
       {/* Galería */}
       <aside className="w-64 shrink-0 border-r border-neutral-800 flex flex-col">
-        <div className="p-3 border-b border-neutral-800 text-sm text-neutral-400">
-          {cargandoGaleria ? "Cargando galería…" : `${galeria.length} imágenes en Cloudflare`}
-        </div>
+        <div className="p-3 border-b border-neutral-800 text-sm text-neutral-400">{cargandoGaleria ? "Cargando galería…" : `${galeria.length} imágenes en Cloudflare`}</div>
         <div ref={galeriaListRef} className="flex-1 overflow-y-auto">
           {galeria.map((obj, i) => (
             <button
               key={obj.key}
               data-idx={i}
               onClick={() => seleccionarIndice(i)}
-              className={`flex items-center gap-2 w-full p-2 text-left border-b border-neutral-900 hover:bg-neutral-800 ${
-                i === indice ? "bg-neutral-800 ring-1 ring-inset ring-blue-500" : ""
-              }`}
+              className={`flex items-center gap-2 w-full p-2 text-left border-b border-neutral-900 hover:bg-neutral-800 ${i === indice ? "bg-neutral-800 ring-1 ring-inset ring-blue-500" : ""}`}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={versiones[obj.key] ? `${obj.url}?v=${versiones[obj.key]}` : obj.url}
-                alt={obj.key}
-                className="w-10 h-10 object-contain bg-neutral-900 rounded shrink-0"
-                loading="lazy"
-              />
+              <img src={versiones[obj.key] ? `${obj.url}?v=${versiones[obj.key]}` : obj.url} alt={obj.key} className="w-10 h-10 object-contain bg-neutral-900 rounded shrink-0" loading="lazy" />
               <span className="text-xs truncate">{obj.key}</span>
             </button>
           ))}
@@ -633,17 +640,20 @@ export default function Editor() {
       <main className="flex-1 flex flex-col">
         <div className="border-b border-neutral-800">
           <div className="p-3 flex flex-wrap items-center gap-2">
-            <button onClick={() => seleccionarIndice(indice - 1)} disabled={indice <= 0} className="btn">◀</button>
-            <button onClick={() => seleccionarIndice(indice + 1)} disabled={indice >= galeria.length - 1} className="btn">▶</button>
+            <button onClick={() => seleccionarIndice(indice - 1)} disabled={indice <= 0} className="btn">
+              ◀
+            </button>
+            <button onClick={() => seleccionarIndice(indice + 1)} disabled={indice >= galeria.length - 1} className="btn">
+              ▶
+            </button>
             <span className="text-xs text-neutral-400 mr-2">{objetoActual ? `${indice + 1} / ${galeria.length}` : "sin selección"}</span>
 
             <div className="w-px h-6 bg-neutral-700 mx-1" />
 
             <span className="text-xs text-neutral-500 uppercase tracking-wide">Quitar fondo</span>
             {MODELOS_QUITAR_FONDO.map((m) => (
-              <button key={m.id} onClick={() => quitarFondo(m.id)} className="btn" title={m.lento ? "Modelo grande — ~10-15s por imagen" : undefined}>
+              <button key={m.id} onClick={() => quitarFondo(m.id)} className="btn" title={m.aviso}>
                 {m.etiqueta}
-                {m.lento && <span className="text-neutral-500"> (lento)</span>}
               </button>
             ))}
             <label
@@ -658,20 +668,11 @@ export default function Editor() {
 
             <span className="text-xs text-neutral-500 uppercase tracking-wide">Pincel</span>
             {(["apagado", "borrar", "restaurar"] as const).map((modo) => (
-              <button
-                key={modo}
-                onClick={() => setModoPincel(modo)}
-                className="btn"
-                style={modoPincel === modo ? { background: "#1d4ed8", borderColor: "#1d4ed8" } : undefined}
-              >
+              <button key={modo} onClick={() => setModoPincel(modo)} className="btn" style={modoPincel === modo ? { background: "#1d4ed8", borderColor: "#1d4ed8" } : undefined}>
                 {modo}
               </button>
             ))}
-            <input
-              type="range" min={RADIO_MIN} max={RADIO_MAX} value={radioPincel}
-              onChange={(e) => setRadioPincel(Number(e.target.value))}
-              className="w-28"
-            />
+            <input type="range" min={RADIO_MIN} max={RADIO_MAX} value={radioPincel} onChange={(e) => setRadioPincel(Number(e.target.value))} className="w-28" />
             <span className="text-xs text-neutral-400">{radioPincel}px</span>
 
             {claveActual && (
@@ -689,24 +690,27 @@ export default function Editor() {
 
           <div className="px-3 pb-3 flex flex-wrap items-center gap-2">
             <span className="text-xs text-neutral-500 uppercase tracking-wide">Tools</span>
-            <button onClick={rotar} className="btn">Rotar 90°</button>
-            <button onClick={espejo} className="btn">Espejo</button>
-            <button onClick={deshacer} className="btn">Deshacer</button>
+            <button onClick={rotar} className="btn">
+              Rotar 90°
+            </button>
+            <button onClick={espejo} className="btn">
+              Espejo
+            </button>
+            <button onClick={deshacer} className="btn">
+              Deshacer
+            </button>
 
             <div className="w-px h-6 bg-neutral-700 mx-1" />
 
             <span className="text-xs text-neutral-500 uppercase tracking-wide">Calidad</span>
-            <button
-              onClick={mejorarCalidad}
-              className="btn"
-              title="Real-ESRGAN x2 — sube nitidez/resolución. Tarda ~3s por clic; úsalo solo en fotos que estén de verdad borrosas, no en todas."
-            >
+            <button onClick={mejorarCalidad} className="btn" title="Real-ESRGAN x2 — sube nitidez/resolución. Tarda ~3s por clic; úsalo solo en fotos que estén de verdad borrosas, no en todas.">
               Mejorar calidad <span className="text-neutral-500">(lento)</span>
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto flex items-center justify-center bg-[repeating-conic-gradient(#2a2a2a_0%_25%,#1a1a1a_0%_50%)] bg-[length:24px_24px]">
+        {/* bg-[repeating-conic-gradient(#2a2a2a_0%_25%,#1a1a1a_0%_50%)] bg-[length:24px_24px] */}
+        <div className="flex-1 overflow-auto flex items-center justify-center bg-green-400">
           <canvas
             ref={canvasRef}
             onPointerDown={onPointerDown}
@@ -719,22 +723,19 @@ export default function Editor() {
         </div>
 
         <div className="p-3 border-t border-neutral-800 flex flex-wrap items-center gap-2">
-          <input
-            type="text" placeholder="https://... (cargar imagen desde un enlace)"
-            value={urlExterna} onChange={(e) => setUrlExterna(e.target.value)}
-            className="input flex-1 min-w-[240px]"
-          />
-          <button onClick={cargarDesdeEnlace} className="btn">Cargar enlace</button>
+          <input type="text" placeholder="https://... (cargar imagen desde un enlace)" value={urlExterna} onChange={(e) => setUrlExterna(e.target.value)} className="input flex-1 min-w-[240px]" />
+          <button onClick={cargarDesdeEnlace} className="btn">
+            Cargar enlace
+          </button>
           <span className="text-xs text-neutral-500">o pega una imagen (⌘V)</span>
 
           <div className="w-px h-6 bg-neutral-700 mx-1" />
 
           <label className="text-xs text-neutral-400">Código universal:</label>
-          <input
-            type="text" value={claveActual} onChange={(e) => setClaveActual(e.target.value)}
-            className="input w-48"
-          />
-          <button onClick={sobrescribirEnCloudflare} className="btn btn-primary">Sobrescribir en Cloudflare</button>
+          <input type="text" value={claveActual} onChange={(e) => setClaveActual(e.target.value)} className="input w-48" />
+          <button onClick={sobrescribirEnCloudflare} className="btn btn-primary">
+            Sobrescribir en Cloudflare
+          </button>
         </div>
 
         <div className="px-3 pb-2 min-h-[1.5rem] text-xs">
@@ -746,16 +747,35 @@ export default function Editor() {
 
       <style jsx global>{`
         .btn {
-          background: #262626; border: 1px solid #404040; border-radius: 6px;
-          padding: 6px 10px; font-size: 12px; color: #e5e5e5; cursor: pointer;
+          background: #262626;
+          border: 1px solid #404040;
+          border-radius: 6px;
+          padding: 6px 10px;
+          font-size: 12px;
+          color: #e5e5e5;
+          cursor: pointer;
         }
-        .btn:hover { background: #333; }
-        .btn:disabled { opacity: .4; cursor: not-allowed; }
-        .btn-primary { background: #1d4ed8; border-color: #1d4ed8; }
-        .btn-primary:hover { background: #1e40af; }
+        .btn:hover {
+          background: #333;
+        }
+        .btn:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+        .btn-primary {
+          background: #1d4ed8;
+          border-color: #1d4ed8;
+        }
+        .btn-primary:hover {
+          background: #1e40af;
+        }
         .input {
-          background: #171717; border: 1px solid #404040; border-radius: 6px;
-          padding: 6px 10px; font-size: 12px; color: #e5e5e5;
+          background: #171717;
+          border: 1px solid #404040;
+          border-radius: 6px;
+          padding: 6px 10px;
+          font-size: 12px;
+          color: #e5e5e5;
         }
       `}</style>
     </div>

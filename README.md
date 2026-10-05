@@ -51,6 +51,9 @@ scripts/servidor_rembg.py  (daemon Python persistente, un solo proceso)
    ├─ POST /quitar-fondo?modelo=isnet-general-use|u2net&clahe=1|0   (rembg + onnxruntime + OpenCV)
    ├─ POST /mejorar-calidad                                        (Real-ESRGAN x2, onnxruntime)
    └─ GET  /salud
+
+scripts/servidor_torch.py  (daemon PyTorch aparte, :8766, venv propio — ver docs/MODELOS_PYTORCH.md)
+   └─ POST /quitar-fondo?modelo=birefnet|rmbg-2.0&clahe=1|0         (PyTorch + GPU/MPS, sin CoreML)
 ```
 
 - **Por qué un daemon:** lanzar un `python3` por clic recargaba el modelo cada vez (~7,7 s por
@@ -133,6 +136,8 @@ Cada mejora está aislada y marcada en el código:
 - **Mejorar calidad:** borrar el bloque `--- "Mejorar calidad" ---` de `servidor_rembg.py`, la
   carpeta `src/app/api/mejorar-calidad/`, y `mejorarCalidad()` + el botón en `page.tsx`; después
   `rm -rf ~/.cache/real-esrgan`.
+- **BiRefNet / RMBG 2.0:** pasos completos (liberar disco o quitar todo el código) en
+  [docs/MODELOS_PYTORCH.md](docs/MODELOS_PYTORCH.md#desinstalar--deshacer).
 - **Volver a una versión anterior:** `git log --oneline` y `git checkout <commit>`; ver etiquetas
   con `git tag`.
 
@@ -159,6 +164,9 @@ scripts/requirements.txt          dependencias Python
 scripts/quitar_fondo.py           LEGADO: esquema viejo (un proceso por clic). No se usa; se puede borrar.
 docs/EXPERIMENTOS.md              qué se probó, con números, y por qué se descartó lo que se descartó
 docs/DESPLIEGUE_REMOTO.md         cómo correr esto sin la MacBook
+docs/MODELOS_PYTORCH.md           BiRefNet + RMBG 2.0: instalar, licencias, desinstalar
+scripts/servidor_torch.py         daemon PyTorch (BiRefNet, RMBG 2.0) — venv en scripts/.venv-torch
+src/lib/torchDaemon.ts            arranque del daemon PyTorch
 ```
 
 ## Documentación relacionada
