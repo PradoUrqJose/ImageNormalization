@@ -11,6 +11,8 @@ mismo en **Windows + NVIDIA (CUDA)**. Probada en RTX 4060 8 GB, Ryzen 5 5600G, 3
 | BiRefNet / RMBG 2.0 | PyTorch fp16 en MPS | PyTorch fp16 en CUDA, con `cudnn.benchmark`, TF32 y calentamiento al cargar |
 | Python | `python3` del sistema + `scripts/.venv-torch` | un solo venv `scripts/.venv` (ver `src/lib/python.ts`) |
 | Espera de arranque del daemon | 10 s | 60 s (importar onnxruntime+CUDA en frío tarda) |
+| Real-ESRGAN | fp32 | copia fp16 generada una vez (`real_esrgan_x2_fp16.onnx`), ~2x más rápida |
+| Real-ESRGAN, mosaicos | 512 px de tamaño variable en los bordes | 256 px **siempre del mismo tamaño** (bordes rellenados): en CUDA, cada cambio de forma cuesta ~0,8 s de re-planificación |
 | CLAHE | PNG intermedio codificado/decodificado | pasa la imagen PIL directo y pide solo la máscara |
 | PNG de salida | compresión 6 | compresión 1 (≈5× más rápido; es un intermedio local) |
 
@@ -58,8 +60,10 @@ lanzador que a su vez abre el intérprete real.
 |---|---|
 | Quitar fondo `u2net` | ~0,08 s |
 | Quitar fondo `isnet` (con o sin CLAHE) | ~0,2 s |
+| Quitar fondo `BiRefNet` (fp16) | ~0,3 s (en la Mac, ~1 s) |
+| Mejorar calidad (Real-ESRGAN x2, 1200×1200 → 2400×2400) | ~2,0 s (primera vez ~6,5 s; con fp32 y mosaicos variables eran 4–7 s) |
 | Arranque del daemon (sin modelo) | ~3 s (hasta ~25 s la primera vez tras instalar) |
 | Primer clic con cada modelo | ~4–5 s (carga + autotuning de CUDA, una sola vez) |
 
-Esto ya es comparable con el CoreML de la Mac. El resto del tiempo por clic es CPU (redimensionar,
+Esto es igual o mejor que CoreML/MPS en la Mac. El resto del tiempo por clic es CPU (redimensionar,
 postproceso de rembg, codificar PNG), no la GPU.

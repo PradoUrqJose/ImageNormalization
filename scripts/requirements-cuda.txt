@@ -24,3 +24,7 @@ safetensors==0.8.0
 timm==1.0.30
 kornia==0.8.3
 einops==0.8.2
+# Solo para "Mejorar calidad": convierte Real-ESRGAN a fp16 una vez (2x más rápido en GPU).
+# Opcionales: sin ellos el daemon usa el modelo fp32.
+onnx==1.23.1
+onnxconverter-common==1.16.0

@@ -136,7 +136,30 @@ def _a_png(img: Image.Image) -> bytes:
 # borrosas, no como paso automático en todas.
 RUTA_MODELO_ESRGAN = os.path.expanduser("~/.cache/real-esrgan/real_esrgan_x2.onnx")
 ESCALA_ESRGAN = 2
+TILE_ESRGAN = 256  # medido en RTX 4060: 256 -> 2.0s, 384 -> 2.7s, 512 -> 2.7s (1200x1200)
 _sesion_esrgan = None
+
+
+def _modelo_esrgan_para_gpu() -> str:
+    """En CUDA usa una copia fp16 del modelo (~2x más rápido en una RTX 4060;
+    diferencia máxima medida 0.0014 sobre 1.0, imperceptible). Se genera una
+    sola vez junto al original; si faltan `onnx`/`onnxconverter-common` o falla
+    la conversión, se sigue con el fp32."""
+    if "CUDAExecutionProvider" not in PROVEEDORES:
+        return RUTA_MODELO_ESRGAN
+    ruta16 = RUTA_MODELO_ESRGAN.replace(".onnx", "_fp16.onnx")
+    if not os.path.exists(ruta16):
+        try:
+            import onnx
+            from onnxconverter_common import float16
+
+            modelo = onnx.load(RUTA_MODELO_ESRGAN)
+            onnx.save(float16.convert_float_to_float16(modelo, keep_io_types=True), ruta16)
+            print("real-esrgan: copia fp16 generada", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"real-esrgan fp16 no disponible, se usa fp32: {e}", file=sys.stderr)
+            return RUTA_MODELO_ESRGAN
+    return ruta16
 
 
 def obtener_sesion_esrgan():
@@ -148,39 +171,49 @@ def obtener_sesion_esrgan():
                 "(bajarlo de https://huggingface.co/SceneWorks/real-esrgan-onnx)"
             )
         print("cargando modelo real-esrgan x2...", file=sys.stderr)
-        _sesion_esrgan = ort.InferenceSession(
-            RUTA_MODELO_ESRGAN, providers=PROVEEDORES
-        )
+        ruta, proveedores = _modelo_esrgan_para_gpu(), PROVEEDORES
+        if "CUDAExecutionProvider" in PROVEEDORES:
+            # Los mosaicos tienen tamaños distintos: con el default (EXHAUSTIVE)
+            # cuDNN probaría algoritmos en cada forma nueva.
+            proveedores = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"}), "CPUExecutionProvider"]
+        _sesion_esrgan = ort.InferenceSession(ruta, providers=proveedores)
         print("real-esrgan x2 listo", file=sys.stderr)
     return _sesion_esrgan
 
 
 def _mejorar_bgr(sesion, bgr: np.ndarray) -> np.ndarray:
-    """Sube nitidez/resolución x2 de un array BGR, procesando en mosaicos de
-    512px (con 16px de solape) para no disparar el uso de memoria en fotos
-    grandes — mismo criterio documentado por el modelo (ver README de
-    SceneWorks/real-esrgan-onnx)."""
-    TILE, PAD = 512, 16
+    """Sube nitidez/resolución x2 de un array BGR, procesando en mosaicos (con
+    PAD px de solape) para no disparar el uso de memoria en fotos grandes —
+    mismo criterio documentado por el modelo (ver README de
+    SceneWorks/real-esrgan-onnx).
+
+    Todos los mosaicos tienen EXACTAMENTE el mismo tamaño (la imagen se rellena
+    por los bordes y se recorta al final): en CUDA, cada cambio de forma de la
+    entrada cuesta ~0.8s de re-planificación en onnxruntime, y con mosaicos de
+    borde más chicos eso pasaba en casi todos. Medido en 1200x1200: 7.2s -> 2.0s.
+    """
+    TILE, PAD = TILE_ESRGAN, 16
     h, w = bgr.shape[:2]
     nombre_in = sesion.get_inputs()[0].name
-    salida = np.zeros((h * ESCALA_ESRGAN, w * ESCALA_ESRGAN, 3), dtype=np.float32)
+    E = ESCALA_ESRGAN
+    salida = np.zeros((h * E, w * E, 3), dtype=np.float32)
+
+    # Rellena PAD alrededor y lo que falte para que h,w sean múltiplos de TILE.
+    extra_y, extra_x = (-h) % TILE, (-w) % TILE
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    rgb = cv2.copyMakeBorder(rgb, PAD, PAD + extra_y, PAD, PAD + extra_x, cv2.BORDER_REPLICATE)
+    rgb = rgb.astype(np.float32) / 255.0
 
     for y0 in range(0, h, TILE):
         for x0 in range(0, w, TILE):
-            y1, x1 = min(y0 + TILE, h), min(x0 + TILE, w)
-            py0, py1 = max(0, y0 - PAD), min(h, y1 + PAD)
-            px0, px1 = max(0, x0 - PAD), min(w, x1 + PAD)
-
-            tile_rgb = cv2.cvtColor(bgr[py0:py1, px0:px1], cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            entrada = tile_rgb.transpose(2, 0, 1)[None, ...]
+            ventana = rgb[y0 : y0 + TILE + 2 * PAD, x0 : x0 + TILE + 2 * PAD]
+            entrada = np.ascontiguousarray(ventana.transpose(2, 0, 1)[None, ...])
             salida_tile = sesion.run(None, {nombre_in: entrada})[0][0]
             salida_tile = np.clip(salida_tile.transpose(1, 2, 0), 0, 1)
 
-            oy0, ox0 = (y0 - py0) * ESCALA_ESRGAN, (x0 - px0) * ESCALA_ESRGAN
-            oy1, ox1 = oy0 + (y1 - y0) * ESCALA_ESRGAN, ox0 + (x1 - x0) * ESCALA_ESRGAN
-            salida[y0 * ESCALA_ESRGAN : y1 * ESCALA_ESRGAN, x0 * ESCALA_ESRGAN : x1 * ESCALA_ESRGAN] = salida_tile[
-                oy0:oy1, ox0:ox1
-            ]
+            y1, x1 = min(y0 + TILE, h), min(x0 + TILE, w)
+            util = salida_tile[PAD * E : PAD * E + (y1 - y0) * E, PAD * E : PAD * E + (x1 - x0) * E]
+            salida[y0 * E : y1 * E, x0 * E : x1 * E] = util
 
     return cv2.cvtColor((salida * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
 
