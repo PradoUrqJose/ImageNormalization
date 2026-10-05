@@ -24,15 +24,15 @@ type ModeloQuitarFondo = "isnet-general-use" | "u2net" | "birefnet" | "rmbg-2.0"
 // que no puede repetirse el cuelgue de ANECompilerService. ~1s por imagen;
 // la primera vez tarda ~30-60s (descarga + carga). Para quitarlos: borrar
 // estas dos entradas y seguir docs/MODELOS_PYTORCH.md.
+//
+// RMBG 2.0 oculto del botón (licencia CC BY-NC 4.0, no comercial): el
+// backend y el daemon siguen intactos, solo se quitó la entrada de abajo.
+// Para reactivarlo, agregar de nuevo { id: "rmbg-2.0", etiqueta: "RMBG 2.0",
+// aviso: "..." }.
 const MODELOS_QUITAR_FONDO: { id: ModeloQuitarFondo; etiqueta: string; aviso?: string }[] = [
   { id: "isnet-general-use", etiqueta: "isnet" },
   { id: "u2net", etiqueta: "u2net" },
   { id: "birefnet", etiqueta: "BiRefNet", aviso: "Modelo grande (MIT) — ~1s por imagen; el primer uso tarda ~30-60s en cargar" },
-  {
-    id: "rmbg-2.0",
-    etiqueta: "RMBG 2.0",
-    aviso: "Bria RMBG 2.0 — licencia NO comercial (CC BY-NC 4.0). ~1s por imagen; el primer uso tarda ~30-60s en cargar",
-  },
 ];
 
 // lib.dom.d.ts reciente tipa ImageData con Uint8ClampedArray<ArrayBuffer>
