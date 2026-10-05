@@ -19,7 +19,8 @@ sobre un diseño se ven mal. Solución:
    modelo, pintar/borrar a mano, reemplazar la foto por otra mejor, y sobrescribir en R2.
 
 Esta herramienta es de **back-office**: el catálogo en sí solo depende de R2, no de esta app.
-Está pensada para correr en local (hoy, en una Mac con Apple Silicon); para llevarla a un
+Está pensada para correr en local (en una Mac con Apple Silicon; en Windows + NVIDIA ver
+[docs/WINDOWS_CUDA.md](docs/WINDOWS_CUDA.md), rama `windows-cuda`); para llevarla a un
 servidor ver [docs/DESPLIEGUE_REMOTO.md](docs/DESPLIEGUE_REMOTO.md).
 
 ## Qué hace

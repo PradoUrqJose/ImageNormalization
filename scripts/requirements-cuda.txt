@@ -1,0 +1,26 @@
+# Dependencias de ambos daemons en Windows + GPU NVIDIA (rama windows-cuda).
+# UN solo venv (scripts/.venv) para servidor_rembg.py y servidor_torch.py.
+# Probado el 2026-10-05: Python 3.13.14, Windows 11, RTX 4060 (driver con CUDA 13.4).
+#
+# Instalar (en este orden; torch va primero y con su propio índice):
+#   python -m venv scripts\.venv
+#   scripts\.venv\Scripts\python -m pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu130
+#   scripts\.venv\Scripts\python -m pip install -r scripts/requirements-cuda.txt
+#   scripts\.venv\Scripts\python -m pip uninstall -y onnxruntime
+#   scripts\.venv\Scripts\python -m pip install --force-reinstall --no-deps onnxruntime-gpu==1.30.0
+#
+# Por qué cu130: onnxruntime-gpu 1.30 está compilado contra CUDA 13, y reutiliza las
+# DLL de CUDA/cuDNN que trae torch (ort.preload_dlls()), así que NO hace falta instalar
+# el CUDA Toolkit. Con torch cu128 (CUDA 12) onnxruntime-gpu no encuentra las DLL.
+# Por qué el uninstall: rembg exige el paquete "onnxruntime" (CPU), que pisa al de GPU.
+rembg==2.0.85
+onnxruntime-gpu==1.30.0
+opencv-python-headless==5.0.0.93
+numpy==2.5.2
+pillow==12.3.0
+transformers==5.18.0
+huggingface_hub==1.33.0
+safetensors==0.8.0
+timm==1.0.30
+kornia==0.8.3
+einops==0.8.2

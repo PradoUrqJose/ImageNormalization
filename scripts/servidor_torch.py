@@ -69,7 +69,17 @@ def _iniciar_torch():
         import torch
 
         _torch = torch
-        _device = "mps" if torch.backends.mps.is_available() else "cpu"
+        if torch.cuda.is_available():
+            _device = "cuda"
+            # Entrada siempre 1024x1024: dejar que cuDNN elija el algoritmo más
+            # rápido una vez (se paga en el calentamiento, no en cada clic).
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        elif torch.backends.mps.is_available():
+            _device = "mps"
+        else:
+            _device = "cpu"
         print(f"torch {torch.__version__} en {_device}", file=sys.stderr)
     return _torch
 
@@ -97,11 +107,25 @@ def obtener_modelo(nombre: str):
                 ) from e
             raise
         modelo.eval().to(_device)
-        if _device == "mps":
+        if _device != "cpu":
             modelo.half()  # fp16: mitad de memoria y más rápido en la GPU
+        _calentar(modelo)
         _modelos[nombre] = modelo
         print(f"{nombre} listo en {time.monotonic() - t0:.1f}s", file=sys.stderr)
     return _modelos[nombre]
+
+
+def _calentar(modelo) -> None:
+    """Una pasada en vacío al cargar: cuDNN/CUDA hacen su autotuning y reservan
+    memoria acá, no en el primer clic real."""
+    if _device == "cpu":
+        return
+    torch = _torch
+    x = torch.zeros((1, 3, *TAM_ENTRADA), device=_device, dtype=torch.half)
+    with torch.inference_mode():
+        modelo(x)
+    if _device == "cuda":
+        torch.cuda.synchronize()
 
 
 def calcular_alfa(modelo, rgb: np.ndarray) -> np.ndarray:
@@ -111,12 +135,12 @@ def calcular_alfa(modelo, rgb: np.ndarray) -> np.ndarray:
     x = cv2.resize(rgb, TAM_ENTRADA, interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
     x = ((x - MEDIA) / DESVIO).transpose(2, 0, 1)[None, ...]
     tensor = torch.from_numpy(np.ascontiguousarray(x)).to(_device)
-    if _device == "mps":
+    if _device != "cpu":
         tensor = tensor.half()
     with torch.inference_mode():
         pred = modelo(tensor)[-1].sigmoid().float().cpu().numpy()[0, 0]
     if _device == "mps":
-        torch.mps.empty_cache()
+        torch.mps.empty_cache()  # en CUDA no hace falta: el allocator reutiliza el bloque
     alfa = cv2.resize(pred, (w, h), interpolation=cv2.INTER_LINEAR)
     return (np.clip(alfa, 0, 1) * 255).astype(np.uint8)
 
@@ -139,7 +163,7 @@ def quitar_fondo(datos: bytes, nombre: str, usar_clahe: bool) -> bytes:
     final = original.convert("RGBA")
     final.putalpha(Image.fromarray(alfa, mode="L"))
     salida = io.BytesIO()
-    final.save(salida, format="PNG")
+    final.save(salida, format="PNG", compress_level=1)
     return salida.getvalue()
 
 

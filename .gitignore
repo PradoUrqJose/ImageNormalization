@@ -41,6 +41,7 @@ yarn-error.log*
 dev.log
 
 # venv de PyTorch para BiRefNet/RMBG 2.0 (~1.1 GB) — ver docs/MODELOS_PYTORCH.md
+/scripts/.venv/
 /scripts/.venv-torch/
 __pycache__/
 

@@ -34,10 +34,24 @@ from rembg import new_session, remove
 # hasta matarlo a mano. Se probaron ambos otra vez en aislado tras matar ese
 # proceso: compilan bien (6-7s, una sola vez) y vuelven a la velocidad
 # original (~0.1-0.3s/imagen), así que se restaura CoreML acá.
-MODELOS_PERMITIDOS = {
-    "isnet-general-use": ["CoreMLExecutionProvider", "CPUExecutionProvider"],
-    "u2net": ["CoreMLExecutionProvider", "CPUExecutionProvider"],
-}
+MODELOS_PERMITIDOS = ("isnet-general-use", "u2net")
+
+
+def _elegir_proveedores() -> list[str]:
+    """CUDA (PC con NVIDIA) > CoreML (Mac) > CPU. En Windows/Linux, las DLL de
+    CUDA/cuDNN las trae PyTorch dentro del mismo venv: preload_dlls() las carga
+    desde ahí, así no hace falta instalar el CUDA Toolkit aparte."""
+    try:
+        ort.preload_dlls()
+    except Exception as e:  # noqa: BLE001 — sin GPU o sin DLLs: se sigue con lo que haya
+        print(f"preload_dlls: {e}", file=sys.stderr)
+    disponibles = ort.get_available_providers()
+    elegidos = [p for p in ("CUDAExecutionProvider", "CoreMLExecutionProvider") if p in disponibles]
+    return elegidos + ["CPUExecutionProvider"]
+
+
+PROVEEDORES = _elegir_proveedores()
+print(f"onnxruntime {ort.__version__}, proveedores: {PROVEEDORES}", file=sys.stderr)
 sesiones: dict[str, object] = {}
 
 
@@ -46,7 +60,7 @@ def obtener_sesion(modelo: str):
         raise ValueError(f"Modelo no permitido: {modelo!r}")
     if modelo not in sesiones:
         print(f"cargando modelo {modelo}...", file=sys.stderr)
-        sesiones[modelo] = new_session(modelo, providers=MODELOS_PERMITIDOS[modelo])
+        sesiones[modelo] = new_session(modelo, providers=PROVEEDORES)
         print(f"{modelo} listo", file=sys.stderr)
     return sesiones[modelo]
 
@@ -71,27 +85,27 @@ def obtener_sesion(modelo: str):
 # Para revertir esto por completo: borrar esta función, el parámetro
 # `clahe` de do_POST, y volver a `remove(datos, session=sesion)` a secas.
 def quitar_fondo_con_clahe(datos: bytes, sesion) -> bytes:
-    arr = cv2.imdecode(np.frombuffer(datos, np.uint8), cv2.IMREAD_COLOR)
-    if arr is None:
-        # formato que cv2 no decodifica (ej. algunos PNG raros) -> sin CLAHE
-        return remove(datos, session=sesion)
-
-    l, a, b = cv2.split(cv2.cvtColor(arr, cv2.COLOR_BGR2LAB))
-    l_realzado = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
-    arr_realzado = cv2.cvtColor(cv2.merge((l_realzado, a, b)), cv2.COLOR_LAB2BGR)
-    ok, buf = cv2.imencode(".png", arr_realzado)
-    if not ok:
-        return remove(datos, session=sesion)
-
-    resultado_realzado = remove(buf.tobytes(), session=sesion)
-    alfa = Image.open(io.BytesIO(resultado_realzado)).convert("RGBA").getchannel("A")
-
     original = Image.open(io.BytesIO(datos)).convert("RGBA")
+    rgb = np.array(original.convert("RGB"))
+
+    l, a, b = cv2.split(cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB))
+    l_realzado = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
+    realzado = cv2.cvtColor(cv2.merge((l_realzado, a, b)), cv2.COLOR_LAB2RGB)
+
+    # Se le pasa la imagen PIL directo y se pide solo la máscara: evita
+    # codificar/decodificar un PNG intermedio (decenas de ms en fotos grandes).
+    alfa = remove(Image.fromarray(realzado), session=sesion, only_mask=True)
+
     final = original.copy()
     final.putalpha(alfa)
+    return _a_png(final)
 
+
+def _a_png(img: Image.Image) -> bytes:
+    # compress_level=1: ~5x más rápido que el default (6) y el archivo es solo
+    # un intermedio local (el navegador lo reencuadra antes de subirlo a R2).
     salida = io.BytesIO()
-    final.save(salida, format="PNG")
+    img.save(salida, format="PNG", compress_level=1)
     return salida.getvalue()
 
 
@@ -135,7 +149,7 @@ def obtener_sesion_esrgan():
             )
         print("cargando modelo real-esrgan x2...", file=sys.stderr)
         _sesion_esrgan = ort.InferenceSession(
-            RUTA_MODELO_ESRGAN, providers=["CoreMLExecutionProvider", "CPUExecutionProvider"]
+            RUTA_MODELO_ESRGAN, providers=PROVEEDORES
         )
         print("real-esrgan x2 listo", file=sys.stderr)
     return _sesion_esrgan

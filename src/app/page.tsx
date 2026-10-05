@@ -727,7 +727,7 @@ export default function Editor() {
           <button onClick={cargarDesdeEnlace} className="btn">
             Cargar enlace
           </button>
-          <span className="text-xs text-neutral-500">o pega una imagen (⌘V)</span>
+          <span className="text-xs text-neutral-500">o pega una imagen (Ctrl+V)</span>
 
           <div className="w-px h-6 bg-neutral-700 mx-1" />
 
