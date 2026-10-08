@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type Objeto = { key: string; url: string; size: number; lastModified: string | null };
+type Objeto = { key: string; url: string; size: number; lastModified: string | null; nuevo?: boolean };
 type Buffer2D = { width: number; height: number; data: Uint8ClampedArray };
 
 const RADIO_MIN = 8;
@@ -220,6 +220,8 @@ export default function Editor() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pintandoRef = useRef(false);
   const galeriaListRef = useRef<HTMLDivElement>(null);
+  const urlPublicaRef = useRef("");
+  const archivoRef = useRef<HTMLInputElement>(null);
 
   // Caché LRU de blobs ya bajados (para no re-pedir a R2 lo que ya se vio) +
   // token de petición (para ignorar respuestas que llegan tarde si el usuario
@@ -275,7 +277,9 @@ export default function Editor() {
       .then((r) => r.json())
       .then((d) => {
         if (d.error) throw new Error(d.error);
-        setGaleria(d.objetos);
+        urlPublicaRef.current = d.publicUrl;
+        const nuevos: Objeto[] = (d.pendientes as string[]).map((c) => ({ key: `${c}.png`, url: "", size: 0, lastModified: null, nuevo: true }));
+        setGaleria([...d.objetos, ...nuevos]);
       })
       .catch((e) => setError(String(e)))
       .finally(() => setCargandoGaleria(false));
@@ -325,6 +329,22 @@ export default function Editor() {
       setMensaje(null);
 
       const obj = galeria[i];
+      if (obj.nuevo) {
+        // Código sin archivo todavía: lienzo en blanco, listo para subir imagen.
+        bufferRef.current = null;
+        originalRef.current = null;
+        historialRef.current = [];
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.width = 1;
+          canvas.height = 1;
+          canvas.getContext("2d")!.clearRect(0, 0, 1, 1);
+        }
+        setClaveActual(obj.key.replace(/\.png$/, ""));
+        setCargandoAccion(null);
+        setMensaje("Código nuevo: sube, pega o carga una imagen para crear su archivo en Cloudflare.");
+        return;
+      }
       // Si ya está en caché no hay ni loading intermedio — se siente instantáneo.
       if (!cacheGet(obj.key)) setCargandoAccion("Cargando imagen…");
 
@@ -605,7 +625,8 @@ export default function Editor() {
       cacheSet(key, blobSubido);
       setVersiones((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
 
-      setMensaje(`Sobrescrito en Cloudflare: ${key}`);
+      setGaleria((prev) => prev.map((o) => (o.key === key && o.nuevo ? { ...o, nuevo: false, url: `${urlPublicaRef.current}/${key}` } : o)));
+      setMensaje(`Subido a Cloudflare: ${key}`);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -619,7 +640,7 @@ export default function Editor() {
     <div className="flex h-screen bg-neutral-950 text-neutral-100">
       {/* Galería */}
       <aside className="w-64 shrink-0 border-r border-neutral-800 flex flex-col">
-        <div className="p-3 border-b border-neutral-800 text-sm text-neutral-400">{cargandoGaleria ? "Cargando galería…" : `${galeria.length} imágenes en Cloudflare`}</div>
+        <div className="p-3 border-b border-neutral-800 text-sm text-neutral-400">{cargandoGaleria ? "Cargando galería…" : `${galeria.filter((o) => !o.nuevo).length} en Cloudflare · ${galeria.filter((o) => o.nuevo).length} nuevas`}</div>
         <div ref={galeriaListRef} className="flex-1 overflow-y-auto">
           {galeria.map((obj, i) => (
             <button
@@ -628,9 +649,14 @@ export default function Editor() {
               onClick={() => seleccionarIndice(i)}
               className={`flex items-center gap-2 w-full p-2 text-left border-b border-neutral-900 hover:bg-neutral-800 ${i === indice ? "bg-neutral-800 ring-1 ring-inset ring-blue-500" : ""}`}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {obj.nuevo ? (
+                <div className="w-10 h-10 bg-white rounded shrink-0" />
+              ) : (
+              // eslint-disable-next-line @next/next/no-img-element
               <img src={versiones[obj.key] ? `${obj.url}?v=${versiones[obj.key]}` : obj.url} alt={obj.key} className="w-10 h-10 object-contain bg-neutral-900 rounded shrink-0" loading="lazy" />
+              )}
               <span className="text-xs truncate">{obj.key}</span>
+              {obj.nuevo && <span className="text-[10px] text-amber-400 ml-auto shrink-0">nuevo</span>}
             </button>
           ))}
         </div>
@@ -727,6 +753,24 @@ export default function Editor() {
           <button onClick={cargarDesdeEnlace} className="btn">
             Cargar enlace
           </button>
+          <input
+            ref={archivoRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (!f) return;
+              setError(null);
+              cargarImagen(f, claveActual)
+                .then(() => setMensaje(claveActual ? `Imagen cargada para ${claveActual}.` : "Imagen cargada. Escribe el código universal antes de subir."))
+                .catch((err) => setError(String(err)));
+            }}
+          />
+          <button onClick={() => archivoRef.current?.click()} className="btn">
+            Subir imagen
+          </button>
           <span className="text-xs text-neutral-500">o pega una imagen (⌘V)</span>
 
           <div className="w-px h-6 bg-neutral-700 mx-1" />
@@ -734,7 +778,7 @@ export default function Editor() {
           <label className="text-xs text-neutral-400">Código universal:</label>
           <input type="text" value={claveActual} onChange={(e) => setClaveActual(e.target.value)} className="input w-48" />
           <button onClick={sobrescribirEnCloudflare} className="btn btn-primary">
-            Sobrescribir en Cloudflare
+            {objetoActual?.nuevo ? "Crear en Cloudflare" : "Sobrescribir en Cloudflare"}
           </button>
         </div>
 

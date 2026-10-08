@@ -31,6 +31,8 @@ export async function listarTodos(): Promise<ObjetoGaleria[]> {
     );
     for (const obj of resp.Contents ?? []) {
       if (!obj.Key || !obj.Key.endsWith(".png")) continue;
+      // Las versiones anteriores guardadas bajo historial/ no son parte del catálogo.
+      if (obj.Key.startsWith("historial/")) continue;
       objetos.push({
         key: obj.Key,
         url: `${PUBLIC_URL}/${obj.Key}`,
