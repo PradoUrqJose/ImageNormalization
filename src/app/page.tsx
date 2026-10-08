@@ -587,7 +587,7 @@ export default function Editor() {
     setError(null);
     try {
       const imagenBase64 = await bufferABase64Png(bufferRef.current);
-      const key = `${claveActual.trim()}.png`;
+      let key = `${claveActual.trim().replace(/\.png$/i, "")}.png`;
       const resp = await fetch("/api/overwrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -595,6 +595,9 @@ export default function Editor() {
       });
       const d = await resp.json();
       if (d.error) throw new Error(d.error);
+
+      key = d.key ?? key;
+      setClaveActual(key.slice(0, -4));
 
       // Ya tenemos los bytes que se acaban de subir — actualizar nuestro
       // propio caché directo, sin red, para que un clic posterior en esta

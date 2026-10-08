@@ -1,3 +1,4 @@
+import { claveProducto, esPngProducto } from "./imagen-producto";
 import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 
 function env(nombre: string): string {
@@ -20,7 +21,7 @@ export const r2 = new S3Client({
 
 export type ObjetoGaleria = { key: string; url: string; size: number; lastModified: string | null };
 
-// Lista TODOS los objetos .png del bucket (pagina sola, no expone cursor —
+// Lista solo PNG de productos en raíz (pagina sola, no expone cursor —
 // para una galería de unos pocos miles de imágenes alcanza sobrado).
 export async function listarTodos(): Promise<ObjetoGaleria[]> {
   const objetos: ObjetoGaleria[] = [];
@@ -30,10 +31,10 @@ export async function listarTodos(): Promise<ObjetoGaleria[]> {
       new ListObjectsV2Command({ Bucket: BUCKET, ContinuationToken: continuationToken, MaxKeys: 1000 })
     );
     for (const obj of resp.Contents ?? []) {
-      if (!obj.Key || !obj.Key.endsWith(".png")) continue;
+      if (!obj.Key || !esPngProducto(obj.Key)) continue;
       objetos.push({
         key: obj.Key,
-        url: `${PUBLIC_URL}/${obj.Key}`,
+        url: `${PUBLIC_URL}/${encodeURIComponent(obj.Key)}?v=${encodeURIComponent(obj.ETag ?? obj.LastModified?.toISOString() ?? "")}`,
         size: obj.Size ?? 0,
         lastModified: obj.LastModified ? obj.LastModified.toISOString() : null,
       });
@@ -45,6 +46,7 @@ export async function listarTodos(): Promise<ObjetoGaleria[]> {
 }
 
 export async function subirImagen(key: string, buffer: Buffer): Promise<void> {
+  key = claveProducto(key);
   await r2.send(
     new PutObjectCommand({
       Bucket: BUCKET,
