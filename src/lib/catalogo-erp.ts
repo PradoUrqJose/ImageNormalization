@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import {S3Client,GetObjectCommand} from '@aws-sdk/client-s3';
 
-export type ProductoERP={code:string;hasImage:boolean;combinations:number;model:string;firstSeenAt:string|null};
+export type ProductoERP={code:string;hasImage:boolean;combinations:number;model:string;firstSeenAt:string|null;brands?:string[];stock?:number|null};
 export type CatalogoERP={schema:1;catalogId:string;updatedAt:string;revision:string;products:ProductoERP[]};
 export function validarCatalogo(value: unknown): CatalogoERP {
   const c=value as CatalogoERP;
@@ -9,6 +9,8 @@ export function validarCatalogo(value: unknown): CatalogoERP {
   const seen=new Set<string>();
   for(const p of c.products){
     if(!p||typeof p.code!=="string"||!/^[A-Z0-9][A-Z0-9 ._-]{0,79}$/.test(p.code)||p.code.includes("..")||seen.has(p.code)||typeof p.hasImage!=="boolean"||!Number.isInteger(p.combinations)||p.combinations<1||typeof p.model!=="string"||(p.firstSeenAt!==null&&!Number.isFinite(Date.parse(p.firstSeenAt))))throw new Error("Producto ERP inválido o repetido");
+    if(p.brands!==undefined&&(!Array.isArray(p.brands)||p.brands.some(b=>typeof b!=="string")))throw new Error("Marcas ERP inválidas");
+    if(p.stock!==undefined&&p.stock!==null&&(!Number.isSafeInteger(p.stock)||p.stock<0))throw new Error("Stock ERP inválido");
     seen.add(p.code);
   }
   return c;

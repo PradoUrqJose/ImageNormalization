@@ -9,7 +9,7 @@ export async function GET() {
     const erp=await leerCatalogoERP();
     if(erp){
       const byCode=new Map(objetos.map(o=>[o.key.slice(0,-4).toUpperCase(),o]));
-      const gallery=erp.catalog.products.map(p=>({...byCode.get(p.code),key:byCode.get(p.code)?.key??`${p.code}.png`,url:byCode.get(p.code)?.url??"",size:byCode.get(p.code)?.size??0,lastModified:byCode.get(p.code)?.lastModified??null,nuevo:!byCode.has(p.code),erpHasImage:p.hasImage,firstSeenAt:p.firstSeenAt}));
+      const gallery=erp.catalog.products.map(p=>({...byCode.get(p.code),key:byCode.get(p.code)?.key??`${p.code}.png`,url:byCode.get(p.code)?.url??"",size:byCode.get(p.code)?.size??0,lastModified:byCode.get(p.code)?.lastModified??null,nuevo:!byCode.has(p.code),erpHasImage:p.hasImage,firstSeenAt:p.firstSeenAt,brands:p.brands??[],stock:p.stock??null}));
       return NextResponse.json({objetos:gallery,pendientes:[],publicUrl:PUBLIC_URL,source:"erp",catalogId:erp.catalog.catalogId,updatedAt:erp.catalog.updatedAt,stale:erp.stale},{headers:{'Cache-Control':'no-store'}});
     }
     // Códigos del Excel que todavía no tienen archivo en Cloudflare: la
