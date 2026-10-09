@@ -10,24 +10,30 @@ export function useCatalogView(items:CatalogItem[],seen:number){
   return {search,setSearch,brand,setBrand,image,setImage,stock,setStock,onlyNew,setOnlyNew,order,setOrder,brands,indices,clear,active:!!(search||brand||image!=='all'||stock!=='all'||onlyNew)};
 }
 type Props={items:CatalogItem[];view:ReturnType<typeof useCatalogView>;selected:number;select:(index:number)=>void;seen:number;markSeen:()=>void;loading:boolean;source:string;updatedAt?:string;warning:string;versions:Record<string,number>;listRef:RefObject<HTMLDivElement|null>};
-export function CatalogPanel({items,view:v,selected,select,seen,markSeen,loading,source,updatedAt,warning,versions,listRef}:Props){
+export function CatalogToolbar({items,view:v,seen,markSeen,loading,source,updatedAt,warning}:Pick<Props,"items"|"view"|"seen"|"markSeen"|"loading"|"source"|"updatedAt"|"warning">){
   const newCount=items.filter(p=>p.firstSeenAt&&Date.parse(p.firstSeenAt)>seen).length;
   const hasStock=items.some(p=>p.stock!==undefined&&p.stock!==null);
-  return <aside className="catalog-sidebar">
-    <div className="catalog-heading"><span className="eyebrow">SPORT CENTER</span><h1>Imágenes de productos</h1><p>Encuentra un código y prepara su imagen.</p></div>
+  return <header className="catalog-toolbar">
+    <div className="catalog-heading"><h1>Imágenes de productos</h1><span className="catalog-source"><span className={`status-dot ${warning?'warning':''}`} />{source==='erp'?'ERP':'Cloudflare'}{updatedAt&&<span>{new Date(updatedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>}</span></div>
     <div className="catalog-summary">{[{id:'all',label:'Todos',count:items.length},{id:'ready',label:'Con imagen',count:items.filter(p=>!p.nuevo).length},{id:'missing',label:'Sin imagen',count:items.filter(p=>p.nuevo).length}].map(t=><button key={t.id} className={`summary-tile ${v.image===t.id?'active':''}`} aria-pressed={v.image===t.id} onClick={()=>v.setImage(t.id)}><strong>{loading?'—':t.count.toLocaleString()}</strong><span>{t.label}</span></button>)}</div>
     <div className="catalog-filters">
-      <label className="field-label" htmlFor="catalog-search">Código universal</label>
+      <div className="filter-search"><label className="field-label" htmlFor="catalog-search">Código universal</label>
       <div className="search-field"><span aria-hidden="true">⌕</span><input id="catalog-search" placeholder="Buscar código…" value={v.search} onChange={e=>v.setSearch(e.target.value)} />{v.search&&<button aria-label="Borrar búsqueda" onClick={()=>v.setSearch('')}>×</button>}</div>
-      <label className="field-label" htmlFor="catalog-brand">Marca</label>
+      </div><div className="filter-brand"><label className="field-label" htmlFor="catalog-brand">Marca</label>
       <select id="catalog-brand" value={v.brand} onChange={e=>v.setBrand(e.target.value)} disabled={!v.brands.length}><option value="">Todas las marcas</option>{v.brands.map(b=><option key={b}>{b}</option>)}</select>
-      <div className="filter-columns"><label>Stock<select aria-label="Stock" disabled={!hasStock} value={v.stock} onChange={e=>v.setStock(e.target.value)}><option value="all">Todo el stock</option><option value="available">Con stock</option><option value="empty">Sin stock</option></select></label><label>Ordenar<select aria-label="Ordenar códigos" value={v.order} onChange={e=>v.setOrder(e.target.value)}><option value="code">Código A–Z</option><option value="recent">Más recientes</option><option value="stock">Mayor stock</option></select></label></div>
-      {source==='erp'&&<label className="new-filter"><input type="checkbox" checked={v.onlyNew} onChange={e=>v.setOnlyNew(e.target.checked)} />Sólo nuevos del ERP<span>{newCount}</span></label>}
+      </div><div className="filter-columns"><label>Stock<select aria-label="Stock" disabled={!hasStock} value={v.stock} onChange={e=>v.setStock(e.target.value)}><option value="all">Todo el stock</option><option value="available">Con stock</option><option value="empty">Sin stock</option></select></label><label>Ordenar<select aria-label="Ordenar códigos" value={v.order} onChange={e=>v.setOrder(e.target.value)}><option value="code">Código A–Z</option><option value="recent">Más recientes</option><option value="stock">Mayor stock</option></select></label></div>
+      {source==='erp'&&<label className="new-filter"><input type="checkbox" checked={v.onlyNew} onChange={e=>v.setOnlyNew(e.target.checked)} />Nuevos del ERP<span>{newCount}</span></label>}
       {source==='erp'&&!hasStock&&!loading&&<p className="catalog-note">Actualiza el sincronizador para consultar marca y stock.</p>}
       {warning&&<p role="status" className="catalog-warning">{warning}</p>}
       {newCount>0&&<div role="status" className="new-notice"><strong>{newCount} {newCount===1?'código nuevo':'códigos nuevos'}</strong><div><button onClick={()=>{v.clear();v.setOnlyNew(true);}}>Ver nuevos</button><button onClick={()=>{markSeen();v.setOnlyNew(false);}}>Marcar vistos</button></div></div>}
+      {v.active&&<button className="clear-filters" onClick={v.clear}>Limpiar filtros</button>}
     </div>
-    <div className="results-heading"><span>{v.indices.length.toLocaleString()} resultados</span>{v.active&&<button onClick={v.clear}>Limpiar filtros</button>}</div>
+  </header>;
+}
+
+export function CatalogPanel({items,view:v,selected,select,seen,loading,versions,listRef}:Pick<Props,"items"|"view"|"selected"|"select"|"seen"|"loading"|"versions"|"listRef">){
+  return <aside className="catalog-sidebar" aria-label="Productos">
+    <div className="results-heading"><span>{v.indices.length.toLocaleString()} códigos</span></div>
     <div ref={listRef} className="catalog-results">
       {loading&&<p className="empty-results">Cargando catálogo…</p>}
       {!loading&&!v.indices.length&&<div className="empty-results"><strong>No hay coincidencias</strong><p>Prueba otro código o limpia los filtros.</p>{v.active&&<button className="btn" onClick={v.clear}>Limpiar filtros</button>}</div>}
@@ -35,10 +41,10 @@ export function CatalogPanel({items,view:v,selected,select,seen,markSeen,loading
         <span className="product-preview">{p.nuevo?<span aria-hidden="true">＋</span>:
           // eslint-disable-next-line @next/next/no-img-element
           <img src={versions[p.key]?`${p.url}${p.url.includes('?')?'&':'?'}v=${versions[p.key]}`:p.url} alt="" loading="lazy" />}</span>
-        <span className="product-info"><strong>{p.key.slice(0,-4)}</strong><span>{(p.brands??[]).join(' · ')||'Sin marca informada'}</span><span className="product-tags"><span className={p.nuevo?'tag missing':'tag'}>{p.nuevo?'Sin imagen':'Con imagen'}</span>{isNew&&<span className="tag new">Nuevo</span>}</span></span>
-        {p.stock!==null&&p.stock!==undefined&&<span className="stock-count"><strong>{p.stock}</strong><span>uds.</span></span>}
+        <span className="product-info"><strong>{p.key.slice(0,-4)}</strong><span className="product-tags">{p.nuevo&&<span className="tag missing">Pendiente de imagen</span>}{isNew&&<span className="tag new">Nuevo</span>}</span></span>
+
       </button>;})}
     </div>
-    <div className="catalog-footer"><span className={`status-dot ${warning?'warning':''}`} />{source==='erp'?'Lista del ERP':'Lista de Cloudflare'}<span>{updatedAt?new Date(updatedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):''}</span></div>
+
   </aside>;
 }
