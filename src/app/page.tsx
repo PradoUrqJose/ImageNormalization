@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type Objeto = { key: string; url: string; size: number; lastModified: string | null; nuevo?: boolean };
+type Objeto = { key: string; url: string; size: number; lastModified: string | null; nuevo?: boolean; erpHasImage?: boolean; firstSeenAt?: string | null };
 type Buffer2D = { width: number; height: number; data: Uint8ClampedArray };
 
 const RADIO_MIN = 8;
@@ -192,6 +192,13 @@ function bufferABase64Png(b: Buffer2D): Promise<string> {
 
 export default function Editor() {
   const [galeria, setGaleria] = useState<Objeto[]>([]);
+  const [busqueda, setBusqueda] = useState("");
+  const [filtro, setFiltro] = useState("todos");
+  const [catalogo, setCatalogo] = useState<{source:string;catalogId?:string;updatedAt?:string;stale?:boolean}>({source:"r2"});
+  const [vistoHasta, setVistoHasta] = useState(0);
+  const [errorCatalogo, setErrorCatalogo] = useState("");
+  const selectedKeyRef = useRef<string | null>(null);
+  const previousGalleryRef = useRef<Objeto[]>([]);
   const [indice, setIndice] = useState<number>(-1);
   const [cargandoGaleria, setCargandoGaleria] = useState(true);
   const [cargandoAccion, setCargandoAccion] = useState<string | null>(null);
@@ -272,18 +279,43 @@ export default function Editor() {
     [cacheGet, cacheSet],
   );
 
+  useEffect(() => { selectedKeyRef.current = galeria[indice]?.key ?? null; }, [galeria, indice]);
   useEffect(() => {
-    fetch("/api/gallery")
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.error) throw new Error(d.error);
-        urlPublicaRef.current = d.publicUrl;
-        const nuevos: Objeto[] = (d.pendientes as string[]).map((c) => ({ key: `${c}.png`, url: "", size: 0, lastModified: null, nuevo: true }));
-        setGaleria([...d.objetos, ...nuevos]);
-      })
-      .catch((e) => setError(String(e)))
-      .finally(() => setCargandoGaleria(false));
+    let stopped=false, busy=false;
+    const controller=new AbortController();
+    const refresh=async()=>{
+      if(busy)return; busy=true;
+      try {
+        const response=await fetch("/api/gallery",{cache:"no-store",signal:controller.signal});
+        const d=await response.json();
+        if(!response.ok||d.error)throw new Error(d.error??"No se pudo actualizar el catálogo");
+        if(stopped)return;
+        urlPublicaRef.current=d.publicUrl;
+        const placeholders:Objeto[]=(d.pendientes??[]).map((c:string)=>({key:`${c}.png`,url:"",size:0,lastModified:null,nuevo:true}));
+        const incoming:Objeto[]=[...d.objetos,...placeholders];
+        const old=previousGalleryRef.current;
+        const oldUrls=new Map(old.map(o=>[o.key,o.url]));
+        for(const item of incoming)if(oldUrls.get(item.key)!==item.url)cacheRef.current.delete(item.key);
+        const byKey=new Map(incoming.map(o=>[o.key,o]));
+        const retained=old.filter(o=>byKey.has(o.key)).map(o=>byKey.get(o.key)!);
+        const known=new Set(retained.map(o=>o.key));
+        const next=[...retained,...incoming.filter(o=>!known.has(o.key))];
+        const selected=selectedKeyRef.current;
+        if(selected)setIndice(next.findIndex(o=>o.key===selected));
+        previousGalleryRef.current=next;setGaleria(next);setCatalogo(d);setErrorCatalogo("");
+        if(d.catalogId){try{setVistoHasta(Number(localStorage.getItem(`erp-catalogo-visto:${d.catalogId}`))||0);}catch{/* almacenamiento opcional */}}
+      }catch(e){if(!stopped)setErrorCatalogo(String(e));}
+      finally{busy=false;if(!stopped)setCargandoGaleria(false);}
+    };
+    void refresh();const timer=setInterval(()=>void refresh(),60000);
+    return()=>{stopped=true;controller.abort();clearInterval(timer);};
   }, []);
+  const novedades=galeria.filter(o=>o.firstSeenAt && Date.parse(o.firstSeenAt)>vistoHasta);
+  const marcarVistos=()=>{
+    const until=Date.parse(catalogo.updatedAt??"")||Date.now();setVistoHasta(until);
+    try{localStorage.setItem(`erp-catalogo-visto:${catalogo.catalogId}`,String(until));}catch{/* no bloquear el editor */}
+    if(filtro==="nuevos")setFiltro("todos");
+  };
 
   const redibujar = useCallback(() => {
     const buf = bufferRef.current;
@@ -342,7 +374,7 @@ export default function Editor() {
         }
         setClaveActual(obj.key.replace(/\.png$/, ""));
         setCargandoAccion(null);
-        setMensaje("Código nuevo: sube, pega o carga una imagen para crear su archivo en Cloudflare.");
+        setMensaje("Código sin PNG: sube, pega o carga una imagen para crear su archivo en Cloudflare.");
         return;
       }
       // Si ya está en caché no hay ni loading intermedio — se siente instantáneo.
@@ -643,9 +675,21 @@ export default function Editor() {
     <div className="flex h-screen bg-neutral-950 text-neutral-100">
       {/* Galería */}
       <aside className="w-64 shrink-0 border-r border-neutral-800 flex flex-col">
-        <div className="p-3 border-b border-neutral-800 text-sm text-neutral-400">{cargandoGaleria ? "Cargando galería…" : `${galeria.filter((o) => !o.nuevo).length} en Cloudflare · ${galeria.filter((o) => o.nuevo).length} nuevas`}</div>
+        <div className="p-3 border-b border-neutral-800 text-sm text-neutral-400">
+          <p>{cargandoGaleria ? "Cargando códigos…" : `${galeria.length} códigos · ${galeria.filter(o=>!o.nuevo).length} con PNG · ${galeria.filter(o=>o.nuevo).length} sin PNG`}</p>
+          <p className="text-xs mt-1">{catalogo.source==="erp" ? `Lista del ERP · ${catalogo.updatedAt?new Date(catalogo.updatedAt).toLocaleString():""}` : "Lista de Cloudflare"}</p>
+          {(catalogo.stale||errorCatalogo)&&<p role="status" className="text-xs text-amber-300 mt-2">{errorCatalogo||"Catálogo sin actualización reciente; se conserva la última lista."}</p>}
+          <input aria-label="Buscar código universal" placeholder="Buscar código universal" value={busqueda} onChange={e=>setBusqueda(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded px-2 py-1 mt-2 text-white" />
+          <select aria-label="Filtrar códigos" value={filtro} onChange={e=>setFiltro(e.target.value)} className="w-full bg-neutral-900 rounded p-1 mt-2">
+            <option value="todos">Todos los códigos</option><option value="con">Con PNG</option><option value="sin">Sin PNG</option><option value="nuevos">Nuevos en el ERP</option>
+          </select>
+          {novedades.length>0&&<div role="status" className="mt-2 p-2 rounded bg-amber-950 text-amber-200">
+            <p>{novedades.length} {novedades.length===1?"código nuevo detectado":"códigos nuevos detectados"} en el ERP</p>
+            <button onClick={()=>setFiltro("nuevos")} className="underline mr-3">Ver nuevos</button><button onClick={marcarVistos} className="underline">Marcar vistos</button>
+          </div>}
+        </div>
         <div ref={galeriaListRef} className="flex-1 overflow-y-auto">
-          {galeria.map((obj, i) => (
+          {galeria.map((obj, i) => (!obj.key.toUpperCase().includes(busqueda.trim().toUpperCase()) || (filtro==="con"&&obj.nuevo) || (filtro==="sin"&&!obj.nuevo) || (filtro==="nuevos"&&(!obj.firstSeenAt||Date.parse(obj.firstSeenAt)<=vistoHasta))) ? null : (
             <button
               key={obj.key}
               data-idx={i}
@@ -656,10 +700,10 @@ export default function Editor() {
                 <div className="w-10 h-10 bg-white rounded shrink-0" />
               ) : (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={versiones[obj.key] ? `${obj.url}?v=${versiones[obj.key]}` : obj.url} alt={obj.key} className="w-10 h-10 object-contain bg-neutral-900 rounded shrink-0" loading="lazy" />
+              <img src={versiones[obj.key] ? `${obj.url}${obj.url.includes("?")?"&":"?"}v=${versiones[obj.key]}` : obj.url} alt={obj.key} className="w-10 h-10 object-contain bg-neutral-900 rounded shrink-0" loading="lazy" />
               )}
               <span className="text-xs truncate">{obj.key}</span>
-              {obj.nuevo && <span className="text-[10px] text-amber-400 ml-auto shrink-0">nuevo</span>}
+              {obj.nuevo && <span className="text-[10px] text-amber-400 ml-auto shrink-0">sin PNG</span>}
             </button>
           ))}
         </div>

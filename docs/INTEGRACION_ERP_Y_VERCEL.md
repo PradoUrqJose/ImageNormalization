@@ -37,7 +37,11 @@ Las funciones Vercel limitan petición/respuesta a 4,5 MB. El JSON base64 actual
 
 No se crea cuenta externa ni se despliega en esta revisión. Gratis ilimitado, buena calidad y servicio estable no quedó demostrado. La mejora Real-ESRGAN también depende del servidor local y necesita otro proveedor o quedar desactivada en modo Vercel.
 
-## Todos los códigos universales del ERP: evaluación
+## Todos los códigos universales del ERP
+
+Actualización 08/10: implementación local preparada y probada; ver [CATALOGO-ERP.md](CATALOGO-ERP.md). El texto siguiente documenta el diseño inicial. Todavía requiere configurar el bucket privado y desplegar por separado.
+
+### Diseño inicial
 
 Hoy ambas ramas publicadas usan la lista de archivos R2 más src/data/codigos-nuevos.json, un listado estático. No consultan automáticamente todos los códigos ERP.
 
