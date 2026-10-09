@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import {CatalogPanel,useCatalogView} from "@/components/catalog-panel";
+import {CatalogPanel,CatalogToolbar,useCatalogView} from "@/components/catalog-panel";
 
 type Objeto = { key: string; url: string; size: number; lastModified: string | null; nuevo?: boolean; erpHasImage?: boolean; firstSeenAt?: string | null; brands?: string[]; stock?: number | null };
 type Buffer2D = { width: number; height: number; data: Uint8ClampedArray };
@@ -675,7 +675,8 @@ export default function Editor() {
   return (
     <div className="image-workspace flex h-screen bg-neutral-950 text-neutral-100">
       {/* Galería */}
-      <CatalogPanel items={galeria} view={catalogView} selected={indice} select={seleccionarIndice} seen={vistoHasta} markSeen={marcarVistos} loading={cargandoGaleria} source={catalogo.source} updatedAt={catalogo.updatedAt} warning={errorCatalogo||(catalogo.stale?"La lista no tiene una actualización reciente.":"")} versions={versiones} listRef={galeriaListRef} />
+      <CatalogToolbar items={galeria} view={catalogView} seen={vistoHasta} markSeen={marcarVistos} loading={cargandoGaleria} source={catalogo.source} updatedAt={catalogo.updatedAt} warning={errorCatalogo||(catalogo.stale?"La lista no tiene una actualización reciente.":"")} />
+      <CatalogPanel items={galeria} view={catalogView} selected={indice} select={seleccionarIndice} seen={vistoHasta} loading={cargandoGaleria} versions={versiones} listRef={galeriaListRef} />
 
       {/* Editor */}
       <main className="editor-main flex-1 min-w-0 flex flex-col">
