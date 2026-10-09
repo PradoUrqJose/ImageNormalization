@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type Objeto = { key: string; url: string; size: number; lastModified: string | null; nuevo?: boolean; erpHasImage?: boolean; firstSeenAt?: string | null };
+import {CatalogPanel,useCatalogView} from "@/components/catalog-panel";
+
+type Objeto = { key: string; url: string; size: number; lastModified: string | null; nuevo?: boolean; erpHasImage?: boolean; firstSeenAt?: string | null; brands?: string[]; stock?: number | null };
 type Buffer2D = { width: number; height: number; data: Uint8ClampedArray };
 
 const RADIO_MIN = 8;
@@ -192,8 +194,6 @@ function bufferABase64Png(b: Buffer2D): Promise<string> {
 
 export default function Editor() {
   const [galeria, setGaleria] = useState<Objeto[]>([]);
-  const [busqueda, setBusqueda] = useState("");
-  const [filtro, setFiltro] = useState("todos");
   const [catalogo, setCatalogo] = useState<{source:string;catalogId?:string;updatedAt?:string;stale?:boolean}>({source:"r2"});
   const [vistoHasta, setVistoHasta] = useState(0);
   const [errorCatalogo, setErrorCatalogo] = useState("");
@@ -310,11 +310,12 @@ export default function Editor() {
     void refresh();const timer=setInterval(()=>void refresh(),60000);
     return()=>{stopped=true;controller.abort();clearInterval(timer);};
   }, []);
-  const novedades=galeria.filter(o=>o.firstSeenAt && Date.parse(o.firstSeenAt)>vistoHasta);
+  const catalogView=useCatalogView(galeria,vistoHasta);
+  const posicionVisible=catalogView.indices.indexOf(indice);
   const marcarVistos=()=>{
     const until=Date.parse(catalogo.updatedAt??"")||Date.now();setVistoHasta(until);
     try{localStorage.setItem(`erp-catalogo-visto:${catalogo.catalogId}`,String(until));}catch{/* no bloquear el editor */}
-    if(filtro==="nuevos")setFiltro("todos");
+
   };
 
   const redibujar = useCallback(() => {
@@ -407,15 +408,15 @@ export default function Editor() {
       if (activo && (activo.tagName === "INPUT" || activo.tagName === "TEXTAREA" || activo.tagName === "SELECT")) return;
       if (e.key === "ArrowRight" || e.key === "ArrowDown") {
         e.preventDefault();
-        seleccionarIndice(Math.min(indice + 1, galeria.length - 1));
+        const next=catalogView.indices[posicionVisible+1];if(next!==undefined)seleccionarIndice(next);
       } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
         e.preventDefault();
-        seleccionarIndice(Math.max(indice - 1, 0));
+        const previous=catalogView.indices[posicionVisible-1];if(previous!==undefined)seleccionarIndice(previous);
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [indice, galeria.length, seleccionarIndice]);
+  }, [posicionVisible, catalogView.indices, seleccionarIndice]);
 
   // Pegar una imagen del portapapeles (Cmd/Ctrl+V) directo al canvas — mismo
   // criterio que "Cargar enlace": mantiene el código universal actual en vez
@@ -672,54 +673,22 @@ export default function Editor() {
   const objetoActual = indice >= 0 ? galeria[indice] : null;
 
   return (
-    <div className="flex h-screen bg-neutral-950 text-neutral-100">
+    <div className="image-workspace flex h-screen bg-neutral-950 text-neutral-100">
       {/* Galería */}
-      <aside className="w-64 shrink-0 border-r border-neutral-800 flex flex-col">
-        <div className="p-3 border-b border-neutral-800 text-sm text-neutral-400">
-          <p>{cargandoGaleria ? "Cargando códigos…" : `${galeria.length} códigos · ${galeria.filter(o=>!o.nuevo).length} con PNG · ${galeria.filter(o=>o.nuevo).length} sin PNG`}</p>
-          <p className="text-xs mt-1">{catalogo.source==="erp" ? `Lista del ERP · ${catalogo.updatedAt?new Date(catalogo.updatedAt).toLocaleString():""}` : "Lista de Cloudflare"}</p>
-          {(catalogo.stale||errorCatalogo)&&<p role="status" className="text-xs text-amber-300 mt-2">{errorCatalogo||"Catálogo sin actualización reciente; se conserva la última lista."}</p>}
-          <input aria-label="Buscar código universal" placeholder="Buscar código universal" value={busqueda} onChange={e=>setBusqueda(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded px-2 py-1 mt-2 text-white" />
-          <select aria-label="Filtrar códigos" value={filtro} onChange={e=>setFiltro(e.target.value)} className="w-full bg-neutral-900 rounded p-1 mt-2">
-            <option value="todos">Todos los códigos</option><option value="con">Con PNG</option><option value="sin">Sin PNG</option><option value="nuevos">Nuevos en el ERP</option>
-          </select>
-          {novedades.length>0&&<div role="status" className="mt-2 p-2 rounded bg-amber-950 text-amber-200">
-            <p>{novedades.length} {novedades.length===1?"código nuevo detectado":"códigos nuevos detectados"} en el ERP</p>
-            <button onClick={()=>setFiltro("nuevos")} className="underline mr-3">Ver nuevos</button><button onClick={marcarVistos} className="underline">Marcar vistos</button>
-          </div>}
-        </div>
-        <div ref={galeriaListRef} className="flex-1 overflow-y-auto">
-          {galeria.map((obj, i) => (!obj.key.toUpperCase().includes(busqueda.trim().toUpperCase()) || (filtro==="con"&&obj.nuevo) || (filtro==="sin"&&!obj.nuevo) || (filtro==="nuevos"&&(!obj.firstSeenAt||Date.parse(obj.firstSeenAt)<=vistoHasta))) ? null : (
-            <button
-              key={obj.key}
-              data-idx={i}
-              onClick={() => seleccionarIndice(i)}
-              className={`flex items-center gap-2 w-full p-2 text-left border-b border-neutral-900 hover:bg-neutral-800 ${i === indice ? "bg-neutral-800 ring-1 ring-inset ring-blue-500" : ""}`}
-            >
-              {obj.nuevo ? (
-                <div className="w-10 h-10 bg-white rounded shrink-0" />
-              ) : (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={versiones[obj.key] ? `${obj.url}${obj.url.includes("?")?"&":"?"}v=${versiones[obj.key]}` : obj.url} alt={obj.key} className="w-10 h-10 object-contain bg-neutral-900 rounded shrink-0" loading="lazy" />
-              )}
-              <span className="text-xs truncate">{obj.key}</span>
-              {obj.nuevo && <span className="text-[10px] text-amber-400 ml-auto shrink-0">sin PNG</span>}
-            </button>
-          ))}
-        </div>
-      </aside>
+      <CatalogPanel items={galeria} view={catalogView} selected={indice} select={seleccionarIndice} seen={vistoHasta} markSeen={marcarVistos} loading={cargandoGaleria} source={catalogo.source} updatedAt={catalogo.updatedAt} warning={errorCatalogo||(catalogo.stale?"La lista no tiene una actualización reciente.":"")} versions={versiones} listRef={galeriaListRef} />
 
       {/* Editor */}
-      <main className="flex-1 flex flex-col">
+      <main className="editor-main flex-1 min-w-0 flex flex-col">
+        <header className="editor-heading"><div><span className="eyebrow">EDITOR DE IMAGEN</span><h2>{objetoActual?.key.slice(0,-4)||"Selecciona un producto"}</h2></div><span>{objetoActual?.nuevo?"Pendiente de imagen":objetoActual?"Imagen disponible":"Busca un código para comenzar"}</span></header>
         <div className="border-b border-neutral-800">
           <div className="p-3 flex flex-wrap items-center gap-2">
-            <button onClick={() => seleccionarIndice(indice - 1)} disabled={indice <= 0} className="btn">
+            <button aria-label="Producto anterior" onClick={() => seleccionarIndice(catalogView.indices[posicionVisible-1])} disabled={posicionVisible<=0} className="btn">
               ◀
             </button>
-            <button onClick={() => seleccionarIndice(indice + 1)} disabled={indice >= galeria.length - 1} className="btn">
+            <button aria-label="Producto siguiente" onClick={() => seleccionarIndice(catalogView.indices[posicionVisible+1]??catalogView.indices[0])} disabled={!catalogView.indices.length||posicionVisible>=catalogView.indices.length-1} className="btn">
               ▶
             </button>
-            <span className="text-xs text-neutral-400 mr-2">{objetoActual ? `${indice + 1} / ${galeria.length}` : "sin selección"}</span>
+            <span className="text-xs text-neutral-400 mr-2">{objetoActual ? posicionVisible>=0?`${posicionVisible + 1} / ${catalogView.indices.length}`:"Fuera del filtro" : "sin selección"}</span>
 
             <div className="w-px h-6 bg-neutral-700 mx-1" />
 
@@ -762,7 +731,7 @@ export default function Editor() {
           </div>
 
           <div className="px-3 pb-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-neutral-500 uppercase tracking-wide">Tools</span>
+            <span className="text-xs text-neutral-500 uppercase tracking-wide">Ajustes</span>
             <button onClick={rotar} className="btn">
               Rotar 90°
             </button>
@@ -783,7 +752,7 @@ export default function Editor() {
         </div>
 
         {/* bg-[repeating-conic-gradient(#2a2a2a_0%_25%,#1a1a1a_0%_50%)] bg-[length:24px_24px] */}
-        <div className="flex-1 overflow-auto flex items-center justify-center bg-green-400">
+        <div className="canvas-stage flex-1 min-h-0 overflow-auto flex items-center justify-center">
           <canvas
             ref={canvasRef}
             onPointerDown={onPointerDown}
@@ -825,7 +794,7 @@ export default function Editor() {
           <label className="text-xs text-neutral-400">Código universal:</label>
           <input type="text" value={claveActual} onChange={(e) => setClaveActual(e.target.value)} className="input w-48" />
           <button onClick={sobrescribirEnCloudflare} className="btn btn-primary">
-            {objetoActual?.nuevo ? "Crear en Cloudflare" : "Sobrescribir en Cloudflare"}
+            {objetoActual?.nuevo ? "Crear imagen" : "Guardar cambios"}
           </button>
         </div>
 
